@@ -34,63 +34,69 @@ def send_discord_notification(cruise):
 
 def parse_cruises():
     with sync_playwright() as p:
-        # 啟動瀏覽器
         browser = p.chromium.launch(headless=True)
+        # 加入額外的 headers 與參數嘗試降低被阻擋機率
         context = browser.new_context(
-            viewport={'width': 1280, 'height': 800},
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            viewport={'width': 1920, 'height': 1080},
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            locale="en-US",
+            timezone_id="America/New_York"
         )
         page = context.new_page()
         
         print("正在載入名人郵輪網頁...")
-        page.goto(TARGET_URL, wait_until="networkidle", timeout=60000)
         
-        # 等待郵輪卡片載入
-        page.wait_for_selector("div[data-testid^='cruise-card-']", timeout=30000)
-        
+        try:
+            # 放寬 networkidle 限制，改用 domcontentloaded，並額外等待一下
+            page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=60000)
+            page.wait_for_timeout(5000) # 強制等待 5 秒讓前端框架渲染
+            
+            # 等待郵輪卡片載入
+            page.wait_for_selector("div[data-testid^='cruise-card-']", timeout=30000)
+            
+        except Exception as e:
+            print(f"載入或等待元素時發生錯誤: {e}")
+            print("正在擷取畫面與 HTML 原始碼以供除錯...")
+            page.screenshot(path="error_screenshot.png", full_page=True)
+            with open("error_page.html", "w", encoding="utf-8") as f:
+                f.write(page.content())
+            browser.close()
+            raise e # 再次拋出錯誤讓 Actions 標示為失敗
+            
         # 取得所有郵輪卡片元素
         cards = page.query_selector_all("div[data-testid^='cruise-card-']")
         print(f"共找到 {len(cards)} 個航程卡片。")
         
         for card in cards:
             try:
-                # 1. 價格 (解析如 1,219 的數字)
                 price_text_el = card.query_selector("span[class*='CruiseCardPriceValue']")
                 if not price_text_el:
                     continue
                 price_text = price_text_el.inner_text().replace(",", "").strip()
                 price = int(re.search(r'\d+', price_text).group())
                 
-                # 篩選條件：低於 1500 美金
                 if price >= 1500:
                     continue
                 
-                # 2. 船名
                 ship_name_el = card.query_selector("h3[data-testid^='cruise-ship-label-']")
                 ship_name = ship_name_el.inner_text().strip() if ship_name_el else "未知船名"
                 
-                # 3. 天數 (例如 11 NIGHTS)
                 nights_el = card.query_selector("span[class*='Tipper-styled__Tipper-content']")
                 nights = nights_el.inner_text().strip() if nights_el else "未知天數"
                 
-                # 4. 出發與目的地港口 (ONEWAY FROM:... 或 ROUNDTRIP FROM:...)
                 ports_route = "未知港口資訊"
                 route_el = card.query_selector("div[class*='CruiseCardLocationListBase']")
                 if route_el:
                     ports_route = route_el.inner_text().replace("\n", " ").strip()
                 
-                # 5. 主要行程城市 (標題如 Bali, Malaysia & Thailand)
                 itinerary_title = "未知行程"
-                # 從產品連結的 data-product-view-link 或卡片標題抓取
                 link_attr = card.get_attribute("data-product-view-link")
                 link = link_attr if link_attr else ""
                 
-                # 試圖抓取卡片左下角大字標題
                 title_el = card.query_selector("div[class*='RefinedCruiseCardBase'] >> xpath=../..//h2")
                 if title_el:
                     itinerary_title = title_el.inner_text().strip()
                 elif "itinerary/" in link:
-                    # 如果沒抓到，嘗試從網址中反推簡稱
                     itinerary_title = link.split("itinerary/")[1].split("-from-")[0].replace("-", " ").title()
 
                 cruise_data = {
