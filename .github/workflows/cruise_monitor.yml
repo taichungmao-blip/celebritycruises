@@ -11,35 +11,35 @@ monitor:
 runs-on: macos-latest
 
 steps:
-- name: 檢出程式碼
-  uses: actions/checkout@v4
+  - name: 檢出程式碼
+    uses: actions/checkout@v4
 
-- name: 設定 Python 環境
-  uses: actions/setup-python@v5
-  with:
-    python-version: '3.10'
+  - name: 設定 Python 環境
+    uses: actions/setup-python@v5
+    with:
+      python-version: '3.10'
 
-- name: 安裝相依套件
-  run: |
-    python -m pip install --upgrade pip
-    # 增加 playwright-stealth 套件
-    pip install playwright playwright-stealth requests
-    
-- name: 安裝 Playwright 瀏覽器核心
-  run: |
-    playwright install chromium
+  - name: 安裝相依套件
+    run: |
+      python -m pip install --upgrade pip
+      # 增加 playwright-stealth 套件
+      pip install playwright playwright-stealth requests
+      
+  - name: 安裝 Playwright 瀏覽器核心
+    run: |
+      playwright install chromium
 
-- name: 執行監控程式
-  env:
-    DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-  run: |
-    python monitor.py
+  - name: 執行監控程式
+    env:
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+    run: |
+      python monitor.py
 
-- name: 儲存錯誤截圖與 HTML
-  if: failure()
-  uses: actions/upload-artifact@v4
-  with:
-    name: debug-artifacts
-    path: |
-      error_screenshot.png
-      error_page.html
+  - name: 儲存錯誤截圖與 HTML
+    if: failure()
+    uses: actions/upload-artifact@v4
+    with:
+      name: debug-artifacts
+      path: |
+        error_screenshot.png
+        error_page.html
