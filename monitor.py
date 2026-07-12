@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import time
 import requests
 from playwright.sync_api import sync_playwright
 
@@ -61,31 +62,51 @@ def parse_cruises():
         print("啟動 Firefox 瀏覽器...")
         browser = p.firefox.launch(headless=True)
         
-        context = browser.new_context(
-            viewport={'width': 1920, 'height': 1080},
-            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:120.0) Gecko/20100101 Firefox/120.0",
-            locale="en-US",
-            timezone_id="America/New_York"
-        )
-        page = context.new_page()
+        max_retries = 3
+        cards = []
         
-        print("正在載入名人郵輪網頁 (Firefox)...")
-        
-        try:
-            page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=60000)
-            page.wait_for_timeout(8000) 
-            page.wait_for_selector("div[data-testid^='cruise-card-']", timeout=30000)
-        except Exception as e:
-            print(f"載入或等待元素時發生錯誤: {e}")
-            page.screenshot(path="error_screenshot.png", full_page=True)
-            with open("error_page.html", "w", encoding="utf-8") as f:
-                f.write(page.content())
-            browser.close()
-            raise e
+        for attempt in range(max_retries):
+            print(f"嘗試載入網頁 (第 {attempt + 1}/{max_retries} 次)...")
+            context = browser.new_context(
+                viewport={'width': 1920, 'height': 1080},
+                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:120.0) Gecko/20100101 Firefox/120.0",
+                locale="en-US",
+                timezone_id="America/New_York"
+            )
+            page = context.new_page()
             
-        cards = page.query_selector_all("div[data-testid^='cruise-card-']")
-        print(f"共找到 {len(cards)} 個航程卡片。")
+            # 抹除 WebDriver 特徵，降低被防火牆發現是機器人的機率
+            page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+            
+            try:
+                # 載入網頁
+                page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=60000)
+                
+                # 給予防火牆驗證畫面充足的時間進行跳轉
+                print("等待網頁跳轉與渲染中...")
+                page.wait_for_timeout(15000) 
+                
+                # 等待卡片元素出現
+                page.wait_for_selector("div[data-testid^='cruise-card-']", timeout=30000)
+                cards = page.query_selector_all("div[data-testid^='cruise-card-']")
+                print(f"成功載入！共找到 {len(cards)} 個航程卡片。")
+                break # 成功抓到資料，跳出重試迴圈
+                
+            except Exception as e:
+                print(f"第 {attempt + 1} 次載入失敗: {e}")
+                if attempt == max_retries - 1:
+                    print("已達最大重試次數，儲存除錯畫面...")
+                    page.screenshot(path="error_screenshot.png", full_page=True)
+                    with open("error_page.html", "w", encoding="utf-8") as f:
+                        f.write(page.content())
+                    browser.close()
+                    raise e
+                else:
+                    print("暫停 5 秒後重試...")
+                    context.close()
+                    time.sleep(5)
         
+        # 開始解析卡片資料
         for card in cards:
             try:
                 price_text_el = card.query_selector("span[class*='CruiseCardPriceValue']")
@@ -110,7 +131,6 @@ def parse_cruises():
                 clean_link = link.lstrip('/') 
                 full_link = f"https://www.celebritycruises.com/{clean_link}" if clean_link else "無連結"
 
-                # 提取出發日期 (供歷史紀錄與顯示使用)
                 sail_date = "未知日期"
                 date_match = re.search(r'sailDate=([^&]+)', full_link)
                 if date_match:
@@ -136,7 +156,6 @@ def parse_cruises():
                     else:
                         itinerary_title = raw_title
 
-                # 建立唯一識別碼：船名 + 出發日期 + 行程
                 unique_id = f"{ship_name}_{sail_date}_{itinerary_title}"
 
                 cruise_data = {
@@ -149,7 +168,6 @@ def parse_cruises():
                     "full_link": full_link
                 }
                 
-                # 檢查歷史紀錄
                 if unique_id in history:
                     old_price = history[unique_id]
                     if price == old_price:
@@ -158,13 +176,10 @@ def parse_cruises():
                     elif price < old_price:
                         send_discord_notification(cruise_data, is_price_drop=True, old_price=old_price)
                     else:
-                        # 價格變貴了但還在 1500 以下，仍然通知
                         send_discord_notification(cruise_data)
                 else:
-                    # 全新低於 1500 的行程
                     send_discord_notification(cruise_data)
                 
-                # 更新歷史紀錄
                 history[unique_id] = price
                 history_updated = True
                 
